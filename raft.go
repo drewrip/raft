@@ -176,6 +176,15 @@ func (r *Raft) runFollower() {
 		case b := <-r.bootstrapCh:
 			b.respond(r.liveBootstrap(b.configuration))
 
+		case h := <-r.timeoutCh:
+			// Using the same proportions as the default config
+			r.conf.HeartbeatTimeout = h
+			r.conf.ElectionTimeout = h
+			r.conf.CommitTimeout = h/20
+			r.conf.LeaderLeaseTimeout = h/2
+			r.logger.Printf("[INFO] raft: %v has updated timeout %v", r, h)
+			heartbeatTimer = randomTimeout(r.conf.HeartbeatTimeout)
+
 		case <-heartbeatTimer:
 			// Restart the heartbeat timer
 			heartbeatTimer = randomTimeout(r.conf.HeartbeatTimeout)
@@ -318,6 +327,8 @@ func (r *Raft) runCandidate() {
 // runLeader runs the FSM for a leader. Do the setup here and drop into
 // the leaderLoop for the hot loop.
 func (r *Raft) runLeader() {
+
+	r.hasPinged = false
 	r.logger.Printf("[INFO] raft: %v entering Leader state", r)
 	metrics.IncrCounter([]string{"raft", "state", "leader"}, 1)
 
@@ -427,7 +438,7 @@ func (r *Raft) runLeader() {
 func (r *Raft) startStopReplication() {
 	inConfig := make(map[ServerID]bool, len(r.configurations.latest.Servers))
 	lastIdx := r.getLastIndex()
-
+	r.pingStartTime = time.Now()
 	// Start replication goroutines that need starting
 	for _, server := range r.configurations.latest.Servers {
 		if server.ID == r.localID {
@@ -498,6 +509,18 @@ func (r *Raft) leaderLoop() {
 
 	lease := time.After(r.conf.LeaderLeaseTimeout)
 	for r.getState() == Leader {
+		r.logger.Printf("[INFO] raft: TICK %v", time.Now())
+		// Checking to see if we have recieved all responses
+		if r.nodesPinged >= r.quorumSize() {
+			r.pingStopTime = time.Now()
+			dk := r.pingStopTime.Sub(r.pingStartTime)
+			r.logger.Printf("[INFO] raft: ping took %v", dk)
+			r.nodesPinged = 0
+			r.newTimeout = dk * 20
+			r.logger.Printf("[INFO] raft: setting new timeout to %v", r.newTimeout)
+			r.timeoutCh<-r.newTimeout
+		}
+
 		select {
 		case rpc := <-r.rpcCh:
 			r.processRPC(rpc)
@@ -998,6 +1021,7 @@ func (r *Raft) processHeartbeat(rpc RPC) {
 // appendEntries is invoked when we get an append entries RPC call. This must
 // only be called from the main thread.
 func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
+
 	defer metrics.MeasureSince([]string{"raft", "rpc", "appendEntries"}, time.Now())
 	// Setup a response
 	resp := &AppendEntriesResponse{
@@ -1007,6 +1031,18 @@ func (r *Raft) appendEntries(rpc RPC, a *AppendEntriesRequest) {
 		Success:        false,
 		NoRetryBackoff: false,
 	}
+
+	// DINGHY SPECIFIC CASES
+
+	if a.PingReq {
+		resp.PingRes = true
+	}
+	// Installing new timeout from leader
+	if a.NewTimeout > 0{
+		resp.TimeoutInstalled = true
+		r.timeoutCh<-a.NewTimeout
+	}
+
 	var rpcErr error
 	defer func() {
 		rpc.Respond(resp, rpcErr)

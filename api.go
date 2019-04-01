@@ -156,6 +156,14 @@ type Raft struct {
 	// is indexed by an artificial ID which is used for deregistration.
 	observersLock sync.RWMutex
 	observers     map[uint64]*Observer
+
+	// Used by Dinghy
+	hasPinged bool
+	timeoutCh chan time.Duration
+	nodesPinged int
+	pingStartTime time.Time
+	pingStopTime time.Time
+	newTimeout time.Duration
 }
 
 // BootstrapCluster initializes a server's storage with the given cluster
@@ -461,6 +469,7 @@ func NewRaft(conf *Config, fsm FSM, logs LogStore, stable StableStore, snaps Sna
 		configurationsCh:      make(chan *configurationsFuture, 8),
 		bootstrapCh:           make(chan *bootstrapFuture),
 		observers:             make(map[uint64]*Observer),
+		timeoutCh:				make(chan time.Duration),
 	}
 
 	// Initialize as a follower.

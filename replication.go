@@ -340,21 +340,35 @@ func (r *Raft) sendLatestSnapshot(s *followerReplication) (bool, error) {
 // to ensure they don't time out. This is done async of replicate(),
 // since that routine could potentially be blocked on disk IO.
 func (r *Raft) heartbeat(s *followerReplication, stopCh chan struct{}) {
+
 	var failures uint64
 	req := AppendEntriesRequest{
 		RPCHeader: r.getRPCHeader(),
 		Term:      s.currentTerm,
 		Leader:    r.trans.EncodePeer(r.localID, r.localAddr),
 	}
+	needToPing := true
+	needToRetarget := false
 	var resp AppendEntriesResponse
 	for {
-		// Wait for the next heartbeat interval or forced notify
-		select {
-		case <-s.notifyCh:
-		case <-randomTimeout(r.conf.HeartbeatTimeout / 10):
-		case <-stopCh:
-			return
+
+		if needToRetarget{
+			req.NewTimeout = r.newTimeout
+			needToRetarget = false
 		}
+
+		// Wait for the next heartbeat interval or forced notify
+		if !needToPing {
+			select {
+			case <-s.notifyCh:
+			case <-randomTimeout(r.conf.HeartbeatTimeout / 10):
+			case <-stopCh:
+				return
+			}
+		} else {
+			req.PingReq = true
+		}
+
 
 		start := time.Now()
 		if err := r.trans.AppendEntries(s.peer.ID, s.peer.Address, &req, &resp); err != nil {
@@ -369,6 +383,12 @@ func (r *Raft) heartbeat(s *followerReplication, stopCh chan struct{}) {
 			failures = 0
 			metrics.MeasureSince([]string{"raft", "replication", "heartbeat", string(s.peer.ID)}, start)
 			s.notifyAll(resp.Success)
+			if needToPing{
+				r.logger.Printf("[INFO] raft: responded to ping %v", r)
+				r.nodesPinged++
+				needToPing = false
+				needToRetarget = true
+			}
 		}
 	}
 }

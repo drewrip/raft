@@ -1,5 +1,9 @@
 package raft
 
+
+import(
+	"time"
+)
 // RPCHeader is a common sub-structure used to pass along protocol version and
 // other information about the cluster. For older Raft implementations before
 // versioning was added this will default to a zero-valued structure when read
@@ -33,6 +37,10 @@ type AppendEntriesRequest struct {
 
 	// Commit index on the leader
 	LeaderCommitIndex uint64
+
+	// Used by Dinghy
+	PingReq bool
+	NewTimeout time.Duration
 }
 
 // See WithRPCHeader.
@@ -57,6 +65,10 @@ type AppendEntriesResponse struct {
 	// There are scenarios where this request didn't succeed
 	// but there's no need to wait/back-off the next attempt.
 	NoRetryBackoff bool
+
+	// Used by Dinghy
+	PingRes bool
+	TimeoutInstalled bool
 }
 
 // See WithRPCHeader.
